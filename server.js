@@ -271,6 +271,18 @@ app.post('/admin/generate', (req, res) => {
     console.log(`[АДМИН] Создан новый ключ: ${newKey} на ${days} дн.`);
     res.json({ success: true, key: newKey });
 });
-
+// ==========================================
+//    ТИХАЯ ПРОВЕРКА ДЛЯ "МГНОВЕННОЙ СМЕРТИ"
+// ==========================================
+app.get('/api/check-ban/:deviceId', (req, res) => {
+    const deviceId = req.params.deviceId;
+    
+    if (bannedDevices.includes(deviceId)) {
+        console.log(`💥 [МГНОВЕННАЯ СМЕРТЬ] Забаненное приложение убито на устройстве: ${deviceId}`);
+        return res.status(403).send("BANNED"); // Отправляем код 403 (Доступ запрещен)
+    }
+    
+    return res.status(200).send("OK"); // Всё чисто, разрешаем работу
+});
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Сервер с панелью (включая разбан) запущен на порту ${PORT}`));
