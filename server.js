@@ -111,11 +111,65 @@ app.post('/api/activate-key', (req, res) => {
 });
 // --- СЕКРЕТНАЯ АДМИНКА ДЛЯ ПРОСМОТРА УСТРОЙСТВ ---
 app.get('/admin/view-devices', (req, res) => {
-    // Эта страница покажет все активированные устройства прямо в браузере
-    res.json({
-        totalActive: Object.keys(activeKeys).length,
-        devices: activeKeys
-    });
+    const total = Object.keys(activeKeys).length;
+    
+    // Создаем красивую HTML-страницу
+    let html = `
+    <!DOCTYPE html>
+    <html lang="ru">
+    <head>
+        <meta charset="UTF-8">
+        <title>Панель управления ключами</title>
+        <style>
+            body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f4f7f6; color: #333; padding: 20px; }
+            h2 { color: #2c3e50; }
+            .container { max-width: 800px; margin: 0 auto; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+            table { width: 100%; border-collapse: collapse; margin-top: 15px; }
+            th, td { padding: 12px; text-align: left; border-bottom: 1px solid #ddd; }
+            th { background-color: #3498db; color: white; font-weight: bold; }
+            tr:hover { background-color: #f1f5f8; }
+            .badge { background-color: #2ecc71; color: white; padding: 5px 10px; border-radius: 20px; font-size: 14px; }
+            code { background: #eee; padding: 3px 6px; border-radius: 4px; font-family: monospace; color: #d35400; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h2>🔑 Активированные устройства <span class="badge">Всего: ${total}</span></h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Ключ</th>
+                        <th>ID Устройства (Телефон)</th>
+                        <th>Истекает (Время местное)</th>
+                    </tr>
+                </thead>
+                <tbody>
+    `;
+
+    // Перебираем все ключи и добавляем их в таблицу
+    for (const [key, data] of Object.entries(activeKeys)) {
+        // Переводим миллисекунды в красивую дату (по вашему часовому поясу)
+        const dateStr = new Date(data.expiresAt).toLocaleString("ru-RU", { timeZone: "Europe/Chisinau" });
+        
+        html += `
+                    <tr>
+                        <td><strong>${key}</strong></td>
+                        <td><code>${data.deviceId}</code></td>
+                        <td>${dateStr}</td>
+                    </tr>
+        `;
+    }
+
+    html += `
+                </tbody>
+            </table>
+        </div>
+    </body>
+    </html>
+    `;
+
+    // Отправляем готовую страницу в браузер
+    res.send(html);
 });
 // ------------------------------------------------
 const PORT = process.env.PORT || 3000;
