@@ -72,23 +72,30 @@ const keysDatabase = {
 };
 
 app.post('/api/activate-key', (req, res) => {
+    // Получаем IP пользователя
     const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
     const now = Date.now();
+    // Настраиваем красивое отображение времени (Кишинев)
+    const dateStr = new Date().toLocaleString("ru-RU", { timeZone: "Europe/Chisinau" });
 
+    // Проверяем, не забанен ли этот IP
     if (ipAttempts[ip] && ipAttempts[ip].blockUntil > now) {
-        return res.status(429).json({
-            valid: false,
-            message: "Слишком много неудачных попыток. IP заблокирован."
-        });
+        console.log(`🟡 [БЛОК] IP: ${ip} временно заблокирован за частые ошибки. Время: ${dateStr}`);
+        return res.status(429).json({ valid: false, message: "Заблокировано" });
     }
 
-    const { key } = req.body;
+    // Получаем данные от приложения
+    const { key, deviceId } = req.body;
 
+    // Если ключ правильный
     if (keysDatabase.hasOwnProperty(key)) {
-        if (ipAttempts[ip]) delete ipAttempts[ip];
+        if (ipAttempts[ip]) delete ipAttempts[ip]; // Сбрасываем ошибки
 
         const durationMs = keysDatabase[key];
         const expiresAt = now + durationMs;
+
+        // ПИШЕМ УСПЕХ В КОНСОЛЬ
+        console.log(`🟢 [УСПЕХ] Ключ: ${key} | Устройство: ${deviceId} | IP: ${ip} | Время: ${dateStr}`);
 
         return res.json({
             valid: true,
@@ -96,6 +103,7 @@ app.post('/api/activate-key', (req, res) => {
         });
     }
 
+    // Если ключ НЕправильный — считаем ошибку
     if (!ipAttempts[ip]) {
         ipAttempts[ip] = { count: 1, blockUntil: 0 };
     } else {
@@ -106,6 +114,9 @@ app.post('/api/activate-key', (req, res) => {
         }
     }
 
+    // ПИШЕМ ОШИБКУ В КОНСОЛЬ
+    console.log(`🔴 [ОШИБКА] Введен неверный ключ: ${key} | Устройство: ${deviceId} | IP: ${ip} | Время: ${dateStr}`);
+
     return res.json({
         valid: false,
         expiresAt: 0
@@ -113,4 +124,4 @@ app.post('/api/activate-key', (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Сервер с ключами формата XXXX-XXXX-XXXX запущен на порту ${PORT}`));
+app.listen(PORT, () => console.log(`Сервер успешно запущен на порту ${PORT}`));
