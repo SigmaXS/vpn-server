@@ -94,8 +94,12 @@ app.post('/api/activate-key', (req, res) => {
         const durationMs = keysDatabase[key];
         const expiresAt = now + durationMs;
 
-        // ПИШЕМ УСПЕХ В КОНСОЛЬ
-        console.log(`🟢 [УСПЕХ] Ключ: ${key} | Устройство: ${deviceId} | IP: ${ip} | Время: ${dateStr}`);
+        // Считаем дни и форматируем дату окончания для вывода в лог
+        const expiresDateStr = new Date(expiresAt).toLocaleString("ru-RU", { timeZone: "Europe/Chisinau" });
+        const daysLeft = durationMs / (24 * 60 * 60 * 1000);
+
+        // ПИШЕМ УСПЕХ В КОНСОЛЬ С ДАТАМИ
+        console.log(`🟢 [УСПЕХ] Ключ: ${key} | Устройство: ${deviceId} | Выдан на: ${daysLeft} дн. | Истекает: ${expiresDateStr} | Время активации: ${dateStr}`);
 
         return res.json({
             valid: true,
