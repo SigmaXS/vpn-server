@@ -36,9 +36,8 @@ const keysDatabase = {
 };
 
 const activeKeys = {};
-const newlyGeneratedKeys = []; // Хранилище для показа новых ключей в админке
+const newlyGeneratedKeys = []; 
 
-// Функция создания случайного ключа XXXX-XXXX-XXXX
 function generateRandomKeyString() {
     const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
     let key = '';
@@ -108,7 +107,6 @@ app.post('/api/activate-key', (req, res) => {
 //           ИНТЕРАКТИВНАЯ АДМИНКА
 // ==========================================
 
-// 1. Отрисовка страницы
 app.get('/admin/view-devices', (req, res) => {
     const total = Object.keys(activeKeys).length;
     
@@ -124,6 +122,7 @@ app.get('/admin/view-devices', (req, res) => {
             table { width: 100%; border-collapse: collapse; margin-top: 15px; }
             th, td { padding: 12px; text-align: left; border-bottom: 1px solid #ddd; }
             th { background-color: #3498db; color: white; font-weight: bold; }
+            .th-dark { background-color: #2c3e50; }
             .btn { padding: 8px 12px; border: none; border-radius: 4px; cursor: pointer; color: white; font-weight: bold; margin-right: 5px; }
             .btn-green { background-color: #2ecc71; }
             .btn-yellow { background-color: #f39c12; }
@@ -184,8 +183,32 @@ app.get('/admin/view-devices', (req, res) => {
             </table>
         </div>
 
+        <!-- НОВЫЙ БЛОК: ЧЕРНЫЙ СПИСОК -->
+        <div class="container">
+            <h2>💀 Черный список (Забаненные устройства)</h2>
+            ${bannedDevices.length > 0 ? `
+            <table>
+                <thead>
+                    <tr>
+                        <th class="th-dark">ID Устройства</th>
+                        <th class="th-dark">Управление</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${bannedDevices.map(id => `
+                    <tr>
+                        <td><code>${id}</code></td>
+                        <td>
+                            <button class="btn btn-green" onclick="unbanDevice('${id}')">Разбанить</button>
+                        </td>
+                    </tr>
+                    `).join('')}
+                </tbody>
+            </table>
+            ` : '<p style="color: #7f8c8d;">Черный список пуст.</p>'}
+        </div>
+
         <script>
-            // Функции для связи кнопок с сервером
             async function unbindDevice(key) {
                 if(!confirm('Вы уверены, что хотите отвязать телефон от ключа ' + key + '?')) return;
                 await fetch('/admin/unbind', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ key }) });
@@ -195,6 +218,13 @@ app.get('/admin/view-devices', (req, res) => {
             async function banDevice(deviceId, key) {
                 if(!confirm('ВНИМАНИЕ! Вы навсегда баните телефон ' + deviceId + '. Продолжить?')) return;
                 await fetch('/admin/ban', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ deviceId, key }) });
+                location.reload();
+            }
+
+            // НОВАЯ ФУНКЦИЯ ДЛЯ РАЗБАНА
+            async function unbanDevice(deviceId) {
+                if(!confirm('Разбанить устройство ' + deviceId + '?')) return;
+                await fetch('/admin/unban', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ deviceId }) });
                 location.reload();
             }
 
@@ -220,19 +250,27 @@ app.post('/admin/unbind', (req, res) => {
 app.post('/admin/ban', (req, res) => {
     const { deviceId, key } = req.body;
     if (!bannedDevices.includes(deviceId)) bannedDevices.push(deviceId);
-    if (key && activeKeys[key]) delete activeKeys[key]; // Сразу отвязываем ключ
+    if (key && activeKeys[key]) delete activeKeys[key];
     console.log(`[АДМИН] Устройство ${deviceId} отправлено в БАН.`);
+    res.json({ success: true });
+});
+
+// НОВЫЙ МАРШРУТ ДЛЯ РАЗБАНА
+app.post('/admin/unban', (req, res) => {
+    const { deviceId } = req.body;
+    bannedDevices = bannedDevices.filter(id => id !== deviceId); // Удаляем ID из списка
+    console.log(`[АДМИН] Устройство ${deviceId} РАЗБАНЕНО.`);
     res.json({ success: true });
 });
 
 app.post('/admin/generate', (req, res) => {
     const { days } = req.body;
     const newKey = generateRandomKeyString();
-    keysDatabase[newKey] = getDaysMs(days); // Добавляем ключ в базу
-    newlyGeneratedKeys.push({ key: newKey, days: days }); // Сохраняем для показа на экране
+    keysDatabase[newKey] = getDaysMs(days); 
+    newlyGeneratedKeys.push({ key: newKey, days: days }); 
     console.log(`[АДМИН] Создан новый ключ: ${newKey} на ${days} дн.`);
     res.json({ success: true, key: newKey });
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Сервер с интерактивной панелью запущен на порту ${PORT}`));
+app.listen(PORT, () => console.log(`Сервер с панелью (включая разбан) запущен на порту ${PORT}`));
