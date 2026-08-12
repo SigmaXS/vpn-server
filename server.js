@@ -8,15 +8,10 @@ const MAX_ATTEMPTS = 5;
 
 const getDaysMs = (days) => days * 24 * 60 * 60 * 1000;
 
-// ЧЕРНЫЙ СПИСОК УСТРОЙСТВ (Бан по железу)
-// Просто добавляйте сюда ID нарушителей в кавычках через запятую
-const bannedDevices = [
-    "яяяяя", // <- Тот самый телефон со скриншота (для примера)
-    "еще-один-id-нарушителя",
-    "и-еще-один-плохой-парень"
-];
+// ЧЕРНЫЙ СПИСОК (Сюда будут попадать забаненные через админку)
+let bannedDevices = [];
 
-// Твоя база ключей
+// Ваша база ключей
 const keysDatabase = {
     // --- 1 день ---
     "ASCF-ASVG-IFDI": getDaysMs(1), "XQWE-RTYU-IOPL": getDaysMs(1), "ZXCV-BNMK-JHGF": getDaysMs(1),
@@ -40,58 +35,58 @@ const keysDatabase = {
     "VIP3-0IK1-OLPM": getDaysMs(30), "VIP3-0ZA1-QWSX": getDaysMs(30), "VIP3-0ED2-CFRV": getDaysMs(30), "VIP3-0TG3-BYHN": getDaysMs(30)
 };
 
-// БАЗА ДЛЯ ПРИВЯЗКИ УСТРОЙСТВ
 const activeKeys = {};
+const newlyGeneratedKeys = []; // Хранилище для показа новых ключей в админке
+
+// Функция создания случайного ключа XXXX-XXXX-XXXX
+function generateRandomKeyString() {
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    let key = '';
+    for (let i = 0; i < 12; i++) {
+        if (i > 0 && i % 4 === 0) key += '-';
+        key += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    return key;
+}
 
 app.post('/api/activate-key', (req, res) => {
     const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
     const now = Date.now();
     const dateStr = new Date().toLocaleString("ru-RU", { timeZone: "Europe/Chisinau" });
 
-    // Блок по IP за перебор
     if (ipAttempts[ip] && ipAttempts[ip].blockUntil > now) {
-        console.log(`🟡 [БЛОК IP] IP: ${ip} временно заблокирован. Время: ${dateStr}`);
         return res.status(429).json({ valid: false, message: "Заблокировано" });
     }
 
     const { key, deviceId } = req.body;
 
-    // --- ПРОВЕРКА НА БАН ПО ЖЕЛЕЗУ ---
+    // ПРОВЕРКА НА БАН
     if (bannedDevices.includes(deviceId)) {
-        console.log(`💀 [БАН ПО ЖЕЛЕЗУ] Заблокированное устройство пытается войти! Вор: ${deviceId} | IP: ${ip}`);
-        return res.json({ valid: false, expiresAt: 0 }); // Отправляем приложению отказ
+        console.log(`💀 [БАН] Заблокированное устройство ломится на сервер! ID: ${deviceId}`);
+        return res.json({ valid: false, expiresAt: 0 });
     }
 
     if (keysDatabase.hasOwnProperty(key)) {
         if (ipAttempts[ip]) delete ipAttempts[ip];
 
-        // Логика привязки к телефону
         if (activeKeys.hasOwnProperty(key)) {
             if (activeKeys[key].deviceId === deviceId) {
                 const expiresAt = activeKeys[key].expiresAt;
-                
                 if (now > expiresAt) {
-                    console.log(`🔴 [ПРОСРОЧЕН] Ключ: ${key} | Устройство: ${deviceId} | Срок истек`);
+                    console.log(`🔴 [ПРОСРОЧЕН] Ключ: ${key} | Устройство: ${deviceId}`);
                     return res.json({ valid: false, expiresAt: 0 });
                 }
-
-                console.log(`🔵 [ПОВТОРНЫЙ ВХОД] Тот же телефон. Ключ: ${key} | Устройство: ${deviceId}`);
+                console.log(`🔵 [ПОВТОРНЫЙ ВХОД] Ключ: ${key} | Устройство: ${deviceId}`);
                 return res.json({ valid: true, expiresAt: expiresAt });
             } else {
-                console.log(`⛔ [ПОПЫТКА КРАЖИ] Ключ ${key} привязан к другому устройству! Вор: ${deviceId}`);
+                console.log(`⛔ [ПОПЫТКА КРАЖИ] Ключ ${key} привязан к другому! Вор: ${deviceId}`);
                 return res.json({ valid: false, expiresAt: 0 });
             }
         } else {
             const durationMs = keysDatabase[key];
             const expiresAt = now + durationMs;
-
             activeKeys[key] = { deviceId: deviceId, expiresAt: expiresAt };
-
-            const expiresDateStr = new Date(expiresAt).toLocaleString("ru-RU", { timeZone: "Europe/Chisinau" });
-            const daysLeft = durationMs / (24 * 60 * 60 * 1000);
-
-            console.log(`🟢 [ПЕРВАЯ АКТИВАЦИЯ] Ключ ${key} НАМЕРТВО ПРИВЯЗАН к: ${deviceId} | На: ${daysLeft} дн. | Истекает: ${expiresDateStr}`);
-
+            console.log(`🟢 [ПЕРВАЯ АКТИВАЦИЯ] Ключ ${key} привязан к: ${deviceId}`);
             return res.json({ valid: true, expiresAt: expiresAt });
         }
     }
@@ -105,15 +100,18 @@ app.post('/api/activate-key', (req, res) => {
             ipAttempts[ip].count = 0;
         }
     }
-
-    console.log(`🔴 [ОШИБКА] Неверный ключ: ${key} | Устройство: ${deviceId} | IP: ${ip} | Время: ${dateStr}`);
+    console.log(`🔴 [ОШИБКА] Неверный ключ: ${key} | Устройство: ${deviceId}`);
     return res.json({ valid: false, expiresAt: 0 });
 });
-// --- СЕКРЕТНАЯ АДМИНКА ДЛЯ ПРОСМОТРА УСТРОЙСТВ ---
+
+// ==========================================
+//           ИНТЕРАКТИВНАЯ АДМИНКА
+// ==========================================
+
+// 1. Отрисовка страницы
 app.get('/admin/view-devices', (req, res) => {
     const total = Object.keys(activeKeys).length;
     
-    // Создаем красивую HTML-страницу
     let html = `
     <!DOCTYPE html>
     <html lang="ru">
@@ -121,41 +119,62 @@ app.get('/admin/view-devices', (req, res) => {
         <meta charset="UTF-8">
         <title>Панель управления ключами</title>
         <style>
-            body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f4f7f6; color: #333; padding: 20px; }
-            h2 { color: #2c3e50; }
-            .container { max-width: 800px; margin: 0 auto; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+            body { font-family: 'Segoe UI', sans-serif; background-color: #f4f7f6; padding: 20px; }
+            .container { max-width: 900px; margin: 0 auto; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); margin-bottom: 20px; }
             table { width: 100%; border-collapse: collapse; margin-top: 15px; }
             th, td { padding: 12px; text-align: left; border-bottom: 1px solid #ddd; }
             th { background-color: #3498db; color: white; font-weight: bold; }
-            tr:hover { background-color: #f1f5f8; }
+            .btn { padding: 8px 12px; border: none; border-radius: 4px; cursor: pointer; color: white; font-weight: bold; margin-right: 5px; }
+            .btn-green { background-color: #2ecc71; }
+            .btn-yellow { background-color: #f39c12; }
+            .btn-red { background-color: #e74c3c; }
             .badge { background-color: #2ecc71; color: white; padding: 5px 10px; border-radius: 20px; font-size: 14px; }
-            code { background: #eee; padding: 3px 6px; border-radius: 4px; font-family: monospace; color: #d35400; }
+            code { background: #eee; padding: 4px 8px; border-radius: 4px; color: #d35400; font-family: monospace; font-size: 14px; }
+            .gen-panel { display: flex; gap: 10px; margin-bottom: 15px; }
         </style>
     </head>
     <body>
+        <div class="container">
+            <h2>🛠️ Генератор новых ключей</h2>
+            <div class="gen-panel">
+                <button class="btn btn-green" onclick="generateKey(1)">+ 1 день</button>
+                <button class="btn btn-green" onclick="generateKey(3)">+ 3 дня</button>
+                <button class="btn btn-green" onclick="generateKey(7)">+ 7 дней</button>
+                <button class="btn btn-green" onclick="generateKey(30)">+ 30 дней</button>
+            </div>
+            ${newlyGeneratedKeys.length > 0 ? `
+            <h4>Неактивированные сгенерированные ключи:</h4>
+            <ul>
+                ${newlyGeneratedKeys.map(k => `<li><code>${k.key}</code> — на ${k.days} дн.</li>`).join('')}
+            </ul>
+            ` : '<p style="color: #7f8c8d;">Вы еще не создавали новые ключи в этой сессии.</p>'}
+        </div>
+
         <div class="container">
             <h2>🔑 Активированные устройства <span class="badge">Всего: ${total}</span></h2>
             <table>
                 <thead>
                     <tr>
                         <th>Ключ</th>
-                        <th>ID Устройства (Телефон)</th>
+                        <th>ID Устройства</th>
                         <th>Истекает (Время местное)</th>
+                        <th>Управление</th>
                     </tr>
                 </thead>
                 <tbody>
     `;
 
-    // Перебираем все ключи и добавляем их в таблицу
     for (const [key, data] of Object.entries(activeKeys)) {
-        // Переводим миллисекунды в красивую дату (по вашему часовому поясу)
         const dateStr = new Date(data.expiresAt).toLocaleString("ru-RU", { timeZone: "Europe/Chisinau" });
-        
         html += `
                     <tr>
                         <td><strong>${key}</strong></td>
                         <td><code>${data.deviceId}</code></td>
                         <td>${dateStr}</td>
+                        <td>
+                            <button class="btn btn-yellow" onclick="unbindDevice('${key}')">Отвязать</button>
+                            <button class="btn btn-red" onclick="banDevice('${data.deviceId}', '${key}')">Забанить</button>
+                        </td>
                     </tr>
         `;
     }
@@ -164,13 +183,56 @@ app.get('/admin/view-devices', (req, res) => {
                 </tbody>
             </table>
         </div>
+
+        <script>
+            // Функции для связи кнопок с сервером
+            async function unbindDevice(key) {
+                if(!confirm('Вы уверены, что хотите отвязать телефон от ключа ' + key + '?')) return;
+                await fetch('/admin/unbind', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ key }) });
+                location.reload();
+            }
+
+            async function banDevice(deviceId, key) {
+                if(!confirm('ВНИМАНИЕ! Вы навсегда баните телефон ' + deviceId + '. Продолжить?')) return;
+                await fetch('/admin/ban', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ deviceId, key }) });
+                location.reload();
+            }
+
+            async function generateKey(days) {
+                await fetch('/admin/generate', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ days }) });
+                location.reload();
+            }
+        </script>
     </body>
     </html>
     `;
-
-    // Отправляем готовую страницу в браузер
     res.send(html);
 });
-// ------------------------------------------------
+
+// 2. Команды (API) для кнопок админки
+app.post('/admin/unbind', (req, res) => {
+    const { key } = req.body;
+    if (activeKeys[key]) delete activeKeys[key];
+    console.log(`[АДМИН] Ключ ${key} принудительно отвязан.`);
+    res.json({ success: true });
+});
+
+app.post('/admin/ban', (req, res) => {
+    const { deviceId, key } = req.body;
+    if (!bannedDevices.includes(deviceId)) bannedDevices.push(deviceId);
+    if (key && activeKeys[key]) delete activeKeys[key]; // Сразу отвязываем ключ
+    console.log(`[АДМИН] Устройство ${deviceId} отправлено в БАН.`);
+    res.json({ success: true });
+});
+
+app.post('/admin/generate', (req, res) => {
+    const { days } = req.body;
+    const newKey = generateRandomKeyString();
+    keysDatabase[newKey] = getDaysMs(days); // Добавляем ключ в базу
+    newlyGeneratedKeys.push({ key: newKey, days: days }); // Сохраняем для показа на экране
+    console.log(`[АДМИН] Создан новый ключ: ${newKey} на ${days} дн.`);
+    res.json({ success: true, key: newKey });
+});
+
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Сервер с БАНОМ ПО ЖЕЛЕЗУ запущен на порту ${PORT}`));
+app.listen(PORT, () => console.log(`Сервер с интерактивной панелью запущен на порту ${PORT}`));
