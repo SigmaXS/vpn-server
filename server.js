@@ -109,6 +109,14 @@ app.post('/api/activate-key', (req, res) => {
     console.log(`🔴 [ОШИБКА] Неверный ключ: ${key} | Устройство: ${deviceId} | IP: ${ip} | Время: ${dateStr}`);
     return res.json({ valid: false, expiresAt: 0 });
 });
-
+// --- СЕКРЕТНАЯ АДМИНКА ДЛЯ ПРОСМОТРА УСТРОЙСТВ ---
+app.get('/admin/view-devices', (req, res) => {
+    // Эта страница покажет все активированные устройства прямо в браузере
+    res.json({
+        totalActive: Object.keys(activeKeys).length,
+        devices: activeKeys
+    });
+});
+// ------------------------------------------------
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Сервер с БАНОМ ПО ЖЕЛЕЗУ запущен на порту ${PORT}`));
