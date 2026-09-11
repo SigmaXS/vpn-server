@@ -15,30 +15,6 @@ const pool = new Pool({
 const getDaysMs = (days) => days * 24 * 60 * 60 * 1000;
 const getHoursMs = (hours) => hours * 60 * 60 * 1000;
 
-// Дефолтные ключи, если база пустая
-const INITIAL_KEYS = {
-    // --- 1 день ---
-    "ASCF-ASVG-IFDI": getDaysMs(1), "XQWE-RTYU-IOPL": getDaysMs(1), "ZXCV-BNMK-JHGF": getDaysMs(1),
-    "POIU-YTRE-WQAS": getDaysMs(1), "LKJH-GFDS-AMNB": getDaysMs(1), "MNBV-CXZL-KJH1": getDaysMs(1),
-    "QAZX-SWED-CVFR": getDaysMs(1), "PLKM-IJUN-BHYT": getDaysMs(1), "VFRT-GBNH-YUIK": getDaysMs(1), "EDCR-FVTG-BYHN": getDaysMs(1),
-    // --- 3 дня ---
-    "KJH1-GFD2-SZA3": getDaysMs(3), "MKOI-UYTR-EWAQ": getDaysMs(3), "ZSEX-DCRT-FVGY": getDaysMs(3),
-    "HUIJ-KOLP-QAWS": getDaysMs(3), "XSWQ-AZDE-FRCV": getDaysMs(3), "BGTF-VCRD-XSWZ": getDaysMs(3),
-    "NMKJ-IUYH-GTRE": getDaysMs(3), "LOPK-JIUH-YFDC": getDaysMs(3), "QAZW-SXED-CRFV": getDaysMs(3), "TGYH-UNJM-IKOL": getDaysMs(3),
-    // --- 7 дней ---
-    "WK7D-ASDF-GHJK": getDaysMs(7), "RT7D-ZXCV-BNMQ": getDaysMs(7), "UI7D-POIU-TREW": getDaysMs(7),
-    "DF7D-LKJH-GFDS": getDaysMs(7), "CV7D-MNBV-CXZA": getDaysMs(7), "GH7D-QWER-TYUI": getDaysMs(7),
-    "JK7D-POIU-YTRE": getDaysMs(7), "ZX7D-ASDF-GHJK": getDaysMs(7), "BN7D-ZXCV-BNMK": getDaysMs(7), "OP7D-LKJH-GFDC": getDaysMs(7),
-    // --- 14 дней ---
-    "M14X-QAZW-SXED": getDaysMs(14), "K14X-CRFV-TGYH": getDaysMs(14), "P14X-UJMI-KOLP": getDaysMs(14),
-    "L14X-QWER-TYUI": getDaysMs(14), "H14X-ASDF-GHJK": getDaysMs(14), "N14X-ZXCV-BNMK": getDaysMs(14),
-    "B14X-POIU-YTRE": getDaysMs(14), "V14X-LKJH-GFDS": getDaysMs(14), "C14X-MNBV-CXZA": getDaysMs(14), "X14X-PLKM-IJUN": getDaysMs(14),
-    // --- 30 дней ---
-    "VIP3-0ASW-EDCR": getDaysMs(30), "VIP3-0FVG-YHNU": getDaysMs(30), "VIP3-0JMI-KOLP": getDaysMs(30),
-    "VIP3-0QAZ-WSXE": getDaysMs(30), "VIP3-0DCF-VTGB": getDaysMs(30), "VIP3-0YH1-UNJM": getDaysMs(30),
-    "VIP3-0IK1-OLPM": getDaysMs(30), "VIP3-0ZA1-QWSX": getDaysMs(30), "VIP3-0ED2-CFRV": getDaysMs(30), "VIP3-0TG3-BYHN": getDaysMs(30)
-};
-
 async function initDB() {
   try {
     await pool.query(`
@@ -55,17 +31,7 @@ async function initDB() {
     `);
 
     await pool.query(`ALTER TABLE blocker_keys ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'active';`);
-
-    const res = await pool.query('SELECT COUNT(*) FROM blocker_keys');
-    if (parseInt(res.rows[0].count) === 0) {
-      for (const [k, duration] of Object.entries(INITIAL_KEYS)) {
-        await pool.query(
-          'INSERT INTO blocker_keys (key_code, duration_ms, expires_at, last_ping, is_generated, status) VALUES ($1, $2, 0, 0, FALSE, $3) ON CONFLICT DO NOTHING',
-          [k, duration, 'active']
-        );
-      }
-    }
-    console.log("PostgreSQL Database initialized for Blocker successfully with Server Time defense.");
+    console.log("PostgreSQL Database initialized cleanly for Blocker.");
   } catch (err) {
     console.error("DB init error:", err);
   }
@@ -85,7 +51,7 @@ function generateRandomKeyString() {
 
 app.get('/', (req, res) => res.redirect('/admin/view-devices'));
 
-// 1. Активация ключа с возвратом точного серверного времени
+// 1. Активация ключа с защитой по серверному времени
 app.post('/api/activate-key', async (req, res) => {
     const { key, deviceId } = req.body;
     const serverNow = Date.now();
@@ -106,7 +72,7 @@ app.post('/api/activate-key', async (req, res) => {
             return res.json({ valid: false, expiresAt: 0, is_banned: true, serverTime: serverNow, message: "Устройство заблокировано!" });
         }
 
-        // Ключ еще ни к кому не привязан
+        // Ключ свободен
         if (!keyData.device_id) {
             const expiresAt = serverNow + parseInt(keyData.duration_ms);
             await pool.query(
@@ -134,7 +100,7 @@ app.post('/api/activate-key', async (req, res) => {
     }
 });
 
-// 2. Фоновая проверка банов и статуса с передачей серверного времени
+// 2. Фоновая проверка банов и пинг
 app.get('/api/check-ban/:deviceId', async (req, res) => {
     const deviceId = req.params.deviceId;
     const serverNow = Date.now();
@@ -158,13 +124,12 @@ app.get('/api/check-ban/:deviceId', async (req, res) => {
     }
 });
 
-// АДМИНКА С АНАЛИТИКОЙ
+// АДМИНКА (только реальные ключи и активные сессии)
 app.get('/admin/view-devices', async (req, res) => {
     try {
         const allKeys = await pool.query('SELECT * FROM blocker_keys ORDER BY key_code');
         const now = Date.now();
 
-        let totalDevices = 0;
         let onlineDevices = 0;
         let activeSubs = 0;
         let expiredSubs = 0;
@@ -175,8 +140,7 @@ app.get('/admin/view-devices', async (req, res) => {
         let newlyGeneratedHtml = '';
 
         allKeys.rows.forEach(data => {
-            if (data.device_id) totalDevices++;
-            else unboundCount++;
+            if (!data.device_id) unboundCount++;
 
             const isBanned = data.status === 'banned';
             const isExpired = data.expires_at && now > parseInt(data.expires_at);
@@ -233,7 +197,7 @@ app.get('/admin/view-devices', async (req, res) => {
         <html lang="ru">
         <head>
             <meta charset="UTF-8">
-            <title>Панель управления Блокером (PostgreSQL)</title>
+            <title>Панель управления Блокером</title>
             <style>
                 body { font-family: 'Segoe UI', sans-serif; background-color: #f4f7f6; padding: 20px; }
                 .container { max-width: 1150px; margin: 0 auto; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); margin-bottom: 20px; }
@@ -255,7 +219,7 @@ app.get('/admin/view-devices', async (req, res) => {
         </head>
         <body>
             <div class="container">
-                <h2>📊 Аналитика и Статистика (Блокер — Серверное время)</h2>
+                <h2>📊 Аналитика и Статистика (Блокер)</h2>
                 <div class="stats-grid">
                     <div class="stat-box"><div>Всего ключей</div><div class="stat-num">${allKeys.rows.length}</div></div>
                     <div class="stat-box"><div>⚡ Онлайн</div><div class="stat-num" style="color:#2ecc71;">${onlineDevices}</div></div>
@@ -324,7 +288,7 @@ app.post('/admin/action', async (req, res) => {
         } else if (action === 'delete') {
             await pool.query("DELETE FROM blocker_keys WHERE key_code = $1", [key_code]);
         } else if (action === 'reset') {
-            const newExp = Date.now() + 720 * 3600 * 1000; // +30 дней от текущего момента
+            const newExp = Date.now() + 720 * 3600 * 1000; // +30 дней
             await pool.query("UPDATE blocker_keys SET status = 'active', expires_at = $1 WHERE key_code = $2", [newExp, key_code]);
         }
     } catch (err) {
