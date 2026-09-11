@@ -54,7 +54,6 @@ async function initDB() {
       );
     `);
 
-    // Проверим, есть ли колонка status (на случай старой таблицы)
     await pool.query(`ALTER TABLE blocker_keys ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'active';`);
 
     const res = await pool.query('SELECT COUNT(*) FROM blocker_keys');
@@ -66,7 +65,7 @@ async function initDB() {
         );
       }
     }
-    console.log("PostgreSQL Database initialized for Blocker successfully.");
+    console.log("PostgreSQL Database initialized for Blocker successfully with Server Time defense.");
   } catch (err) {
     console.error("DB init error:", err);
   }
@@ -86,79 +85,80 @@ function generateRandomKeyString() {
 
 app.get('/', (req, res) => res.redirect('/admin/view-devices'));
 
+// 1. Активация ключа с возвратом точного серверного времени
 app.post('/api/activate-key', async (req, res) => {
     const { key, deviceId } = req.body;
-    if (!key || !deviceId) return res.json({ valid: false, expiresAt: 0 });
+    const serverNow = Date.now();
+
+    if (!key || !deviceId) return res.json({ valid: false, expiresAt: 0, serverTime: serverNow });
 
     const cleanKey = key.trim().toUpperCase();
-    const now = Date.now();
 
     try {
         const keyQuery = await pool.query('SELECT * FROM blocker_keys WHERE key_code = $1', [cleanKey]);
         if (keyQuery.rows.length === 0) {
-            return res.json({ valid: false, expiresAt: 0 });
+            return res.json({ valid: false, expiresAt: 0, serverTime: serverNow });
         }
 
         const keyData = keyQuery.rows[0];
 
-        // Проверка на бан
         if (keyData.status === 'banned') {
-            return res.json({ valid: false, expiresAt: 0, message: "Устройство заблокировано!" });
+            return res.json({ valid: false, expiresAt: 0, is_banned: true, serverTime: serverNow, message: "Устройство заблокировано!" });
         }
 
-        // Ключ еще ни к кому не был привязан
+        // Ключ еще ни к кому не привязан
         if (!keyData.device_id) {
-            const expiresAt = now + parseInt(keyData.duration_ms);
+            const expiresAt = serverNow + parseInt(keyData.duration_ms);
             await pool.query(
                 'UPDATE blocker_keys SET device_id = $1, expires_at = $2, last_ping = $3, status = $4 WHERE key_code = $5',
-                [deviceId, expiresAt, now, 'active', cleanKey]
+                [deviceId, expiresAt, serverNow, 'active', cleanKey]
             );
             console.log(`⏱️ [КЛЮЧ АКТИВИРОВАН] Ключ ${cleanKey} привязан к: ${deviceId}`);
-            return res.json({ valid: true, expiresAt: expiresAt });
+            return res.json({ valid: true, expiresAt: expiresAt, serverTime: serverNow });
         }
 
         // Ключ привязан к этому же устройству
         if (keyData.device_id === deviceId) {
-            if (now > parseInt(keyData.expires_at)) {
-                return res.json({ valid: false, expiresAt: 0 });
+            if (serverNow > parseInt(keyData.expires_at)) {
+                return res.json({ valid: false, expiresAt: 0, serverTime: serverNow });
             }
-            await pool.query('UPDATE blocker_keys SET last_ping = $1 WHERE key_code = $2', [now, cleanKey]);
-            return res.json({ valid: true, expiresAt: parseInt(keyData.expires_at) });
+            await pool.query('UPDATE blocker_keys SET last_ping = $1 WHERE key_code = $2', [serverNow, cleanKey]);
+            return res.json({ valid: true, expiresAt: parseInt(keyData.expires_at), serverTime: serverNow });
         }
 
-        // Ключ занят другим устройством
-        return res.json({ valid: false, expiresAt: 0 });
+        return res.json({ valid: false, expiresAt: 0, serverTime: serverNow });
 
     } catch (err) {
         console.error(err);
-        res.status(500).json({ valid: false, expiresAt: 0 });
+        res.status(500).json({ valid: false, expiresAt: 0, serverTime: serverNow });
     }
 });
 
+// 2. Фоновая проверка банов и статуса с передачей серверного времени
 app.get('/api/check-ban/:deviceId', async (req, res) => {
     const deviceId = req.params.deviceId;
-    const now = Date.now();
+    const serverNow = Date.now();
     
     try {
         const devQuery = await pool.query('SELECT * FROM blocker_keys WHERE device_id = $1', [deviceId]);
         if (devQuery.rows.length > 0) {
             const data = devQuery.rows[0];
             if (data.status === 'banned') {
-                return res.status(403).send("BANNED");
+                return res.status(403).json({ status: "BANNED", serverTime: serverNow });
             }
-            await pool.query('UPDATE blocker_keys SET last_ping = $1 WHERE key_code = $2', [now, data.key_code]);
-            if (now > parseInt(data.expires_at)) {
-                return res.status(403).send("EXPIRED");
+            await pool.query('UPDATE blocker_keys SET last_ping = $1 WHERE key_code = $2', [serverNow, data.key_code]);
+            if (serverNow > parseInt(data.expires_at)) {
+                return res.status(403).json({ status: "EXPIRED", serverTime: serverNow });
             }
         }
-        return res.status(200).send("OK");
+        return res.status(200).json({ status: "OK", serverTime: serverNow });
     } catch (err) {
         console.error(err);
-        return res.status(200).send("OK");
+        return res.status(200).json({ status: "OK", serverTime: serverNow });
     }
 });
 
-// АДМИНКА С АНАЛИТИКОЙ И НОВЫМИ КНОПКАМИ
+// АДМИНКА С АНАЛИТИКОЙ
 app.get('/admin/view-devices', async (req, res) => {
     try {
         const allKeys = await pool.query('SELECT * FROM blocker_keys ORDER BY key_code');
@@ -255,7 +255,7 @@ app.get('/admin/view-devices', async (req, res) => {
         </head>
         <body>
             <div class="container">
-                <h2>📊 Аналитика и Статистика (Блокер)</h2>
+                <h2>📊 Аналитика и Статистика (Блокер — Серверное время)</h2>
                 <div class="stats-grid">
                     <div class="stat-box"><div>Всего ключей</div><div class="stat-num">${allKeys.rows.length}</div></div>
                     <div class="stat-box"><div>⚡ Онлайн</div><div class="stat-num" style="color:#2ecc71;">${onlineDevices}</div></div>
@@ -324,7 +324,7 @@ app.post('/admin/action', async (req, res) => {
         } else if (action === 'delete') {
             await pool.query("DELETE FROM blocker_keys WHERE key_code = $1", [key_code]);
         } else if (action === 'reset') {
-            const newExp = Date.now() + 720 * 3600 * 1000; // +30 дней
+            const newExp = Date.now() + 720 * 3600 * 1000; // +30 дней от текущего момента
             await pool.query("UPDATE blocker_keys SET status = 'active', expires_at = $1 WHERE key_code = $2", [newExp, key_code]);
         }
     } catch (err) {
