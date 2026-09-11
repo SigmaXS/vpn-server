@@ -13,18 +13,19 @@ const pool = new Pool({
 });
 
 const getDaysMs = (days) => days * 24 * 60 * 60 * 1000;
+const getHoursMs = (hours) => hours * 60 * 60 * 1000;
 
-// Только твои реальные пользовательские ключи с привязками
+// Только твои конкретные 9 устройств со статусами и актуальными датами на 2026 год
 const ACTIVE_DEVICES_KEYS = [
-    { key: "VIP3-0TG3-BYHN", duration: getDaysMs(30), dev: "4249ff61a9706bfa", exp: 1726171460000 },
-    { key: "VIP3-0ED2-CFRV", duration: getDaysMs(30), dev: "42a5d4cb52fade31", exp: 1726180822000 },
-    { key: "VIP3-0YH1-UNJM", duration: getDaysMs(30), dev: "7db82014c369c3e5", exp: 1726316046000 },
-    { key: "VIP3-0QAZ-WSXE", duration: getDaysMs(30), dev: "7fbb76d7859d9cc3", exp: 1726331948000 },
-    { key: "VIP3-0FVG-YHNU", duration: getDaysMs(30), dev: "6f3b0aafa0faf49c", exp: 1726776547000 },
-    { key: "VIP3-0ZA1-QWSX", duration: getDaysMs(30), dev: "59024857645375c0", exp: 1727799780000 },
-    { key: "VIP3-0IK1-OLPM", duration: getDaysMs(30), dev: "62866b04b44db3fb", exp: 1728551296000 },
-    { key: "ZLRH-2V9R-7BRA", duration: getDaysMs(14), dev: "8785dca4721e59b9", exp: 1726642489000 },
-    { key: "ISK5-TSUE-K413", duration: getDaysMs(30), dev: "d8240e33874cd220", exp: 1728660195000 }
+    { key: "VIP3-0TG3-BYHN", duration: getDaysMs(30), dev: "4249ff61a9706bfa", exp: new Date('2026-09-12T23:04:20').getTime() },
+    { key: "VIP3-0ED2-CFRV", duration: getDaysMs(30), dev: "42a5d4cb52fade31", exp: new Date('2026-09-13T01:20:22').getTime() },
+    { key: "VIP3-0YH1-UNJM", duration: getDaysMs(30), dev: "7db82014c369c3e5", exp: new Date('2026-09-14T14:14:06').getTime() },
+    { key: "VIP3-0QAZ-WSXE", duration: getDaysMs(30), dev: "7fbb76d7859d9cc3", exp: new Date('2026-09-14T17:39:08').getTime() },
+    { key: "VIP3-0FVG-YHNU", duration: getDaysMs(30), dev: "6f3b0aafa0faf49c", exp: new Date('2026-09-19T23:09:07').getTime() },
+    { key: "VIP3-0ZA1-QWSX", duration: getDaysMs(30), dev: "59024857645375c0", exp: new Date('2026-10-01T19:23:00').getTime() },
+    { key: "VIP3-0IK1-OLPM", duration: getDaysMs(30), dev: "62866b04b44db3fb", exp: new Date('2026-10-10T12:08:16').getTime() },
+    { key: "ZLRH-2V9R-7BRA", duration: getDaysMs(14), dev: "8785dca4721e59b9", exp: new Date('2026-09-18T09:54:49').getTime() },
+    { key: "ISK5-TSUE-K413", duration: getDaysMs(30), dev: "d8240e33874cd220", exp: new Date('2026-10-11T18:23:15').getTime() }
 ];
 
 async function initDB() {
@@ -44,7 +45,11 @@ async function initDB() {
 
     await pool.query(`ALTER TABLE blocker_keys ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'active';`);
 
-    // Заливаем только нужные рабочие ключи с их устройствами
+    // Очищаем старые мусорные ключи, которых нет в списке активных
+    const activeKeysList = ACTIVE_DEVICES_KEYS.map(item => item.key);
+    await pool.query(`DELETE FROM blocker_keys WHERE is_generated = FALSE AND key_code <> ALL($1::text[])`, [activeKeysList]);
+
+    // Заливаем/обновляем только нужные 9 устройств
     for (const item of ACTIVE_DEVICES_KEYS) {
       await pool.query(
         `INSERT INTO blocker_keys (key_code, duration_ms, device_id, expires_at, last_ping, is_generated, status) 
@@ -55,7 +60,7 @@ async function initDB() {
       );
     }
 
-    console.log("Database initialized with active devices only.");
+    console.log("Database initialized with exact 9 active devices.");
   } catch (err) {
     console.error("DB init error:", err);
   }
@@ -75,6 +80,7 @@ function generateRandomKeyString() {
 
 app.get('/', (req, res) => res.redirect('/admin/view-devices'));
 
+// Активация ключа с защитой по серверному времени
 app.post('/api/activate-key', async (req, res) => {
     const { key, deviceId } = req.body;
     const serverNow = Date.now();
@@ -120,6 +126,7 @@ app.post('/api/activate-key', async (req, res) => {
     }
 });
 
+// Фоновая проверка банов и пинг
 app.get('/api/check-ban/:deviceId', async (req, res) => {
     const deviceId = req.params.deviceId;
     const serverNow = Date.now();
@@ -143,6 +150,7 @@ app.get('/api/check-ban/:deviceId', async (req, res) => {
     }
 });
 
+// Админ-панель (только нужные устройства + генератор)
 app.get('/admin/view-devices', async (req, res) => {
     try {
         const allKeys = await pool.query('SELECT * FROM blocker_keys ORDER BY key_code');
