@@ -13,7 +13,19 @@ const pool = new Pool({
 });
 
 const getDaysMs = (days) => days * 24 * 60 * 60 * 1000;
-const getHoursMs = (hours) => hours * 60 * 60 * 1000;
+
+// Только твои реальные пользовательские ключи с привязками
+const ACTIVE_DEVICES_KEYS = [
+    { key: "VIP3-0TG3-BYHN", duration: getDaysMs(30), dev: "4249ff61a9706bfa", exp: 1726171460000 },
+    { key: "VIP3-0ED2-CFRV", duration: getDaysMs(30), dev: "42a5d4cb52fade31", exp: 1726180822000 },
+    { key: "VIP3-0YH1-UNJM", duration: getDaysMs(30), dev: "7db82014c369c3e5", exp: 1726316046000 },
+    { key: "VIP3-0QAZ-WSXE", duration: getDaysMs(30), dev: "7fbb76d7859d9cc3", exp: 1726331948000 },
+    { key: "VIP3-0FVG-YHNU", duration: getDaysMs(30), dev: "6f3b0aafa0faf49c", exp: 1726776547000 },
+    { key: "VIP3-0ZA1-QWSX", duration: getDaysMs(30), dev: "59024857645375c0", exp: 1727799780000 },
+    { key: "VIP3-0IK1-OLPM", duration: getDaysMs(30), dev: "62866b04b44db3fb", exp: 1728551296000 },
+    { key: "ZLRH-2V9R-7BRA", duration: getDaysMs(14), dev: "8785dca4721e59b9", exp: 1726642489000 },
+    { key: "ISK5-TSUE-K413", duration: getDaysMs(30), dev: "d8240e33874cd220", exp: 1728660195000 }
+];
 
 async function initDB() {
   try {
@@ -31,7 +43,19 @@ async function initDB() {
     `);
 
     await pool.query(`ALTER TABLE blocker_keys ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'active';`);
-    console.log("PostgreSQL Database initialized cleanly for Blocker.");
+
+    // Заливаем только нужные рабочие ключи с их устройствами
+    for (const item of ACTIVE_DEVICES_KEYS) {
+      await pool.query(
+        `INSERT INTO blocker_keys (key_code, duration_ms, device_id, expires_at, last_ping, is_generated, status) 
+         VALUES ($1, $2, $3, $4, 0, FALSE, 'active') 
+         ON CONFLICT (key_code) DO UPDATE 
+         SET device_id = EXCLUDED.device_id, expires_at = EXCLUDED.expires_at`,
+        [item.key, item.duration, item.dev, item.exp]
+      );
+    }
+
+    console.log("Database initialized with active devices only.");
   } catch (err) {
     console.error("DB init error:", err);
   }
@@ -51,7 +75,6 @@ function generateRandomKeyString() {
 
 app.get('/', (req, res) => res.redirect('/admin/view-devices'));
 
-// 1. Активация ключа с защитой по серверному времени
 app.post('/api/activate-key', async (req, res) => {
     const { key, deviceId } = req.body;
     const serverNow = Date.now();
@@ -72,18 +95,15 @@ app.post('/api/activate-key', async (req, res) => {
             return res.json({ valid: false, expiresAt: 0, is_banned: true, serverTime: serverNow, message: "Устройство заблокировано!" });
         }
 
-        // Ключ свободен
         if (!keyData.device_id) {
             const expiresAt = serverNow + parseInt(keyData.duration_ms);
             await pool.query(
                 'UPDATE blocker_keys SET device_id = $1, expires_at = $2, last_ping = $3, status = $4 WHERE key_code = $5',
                 [deviceId, expiresAt, serverNow, 'active', cleanKey]
             );
-            console.log(`⏱️ [КЛЮЧ АКТИВИРОВАН] Ключ ${cleanKey} привязан к: ${deviceId}`);
             return res.json({ valid: true, expiresAt: expiresAt, serverTime: serverNow });
         }
 
-        // Ключ привязан к этому же устройству
         if (keyData.device_id === deviceId) {
             if (serverNow > parseInt(keyData.expires_at)) {
                 return res.json({ valid: false, expiresAt: 0, serverTime: serverNow });
@@ -100,7 +120,6 @@ app.post('/api/activate-key', async (req, res) => {
     }
 });
 
-// 2. Фоновая проверка банов и пинг
 app.get('/api/check-ban/:deviceId', async (req, res) => {
     const deviceId = req.params.deviceId;
     const serverNow = Date.now();
@@ -124,7 +143,6 @@ app.get('/api/check-ban/:deviceId', async (req, res) => {
     }
 });
 
-// АДМИНКА (только реальные ключи и активные сессии)
 app.get('/admin/view-devices', async (req, res) => {
     try {
         const allKeys = await pool.query('SELECT * FROM blocker_keys ORDER BY key_code');
@@ -226,7 +244,6 @@ app.get('/admin/view-devices', async (req, res) => {
                     <div class="stat-box"><div>✅ Активных</div><div class="stat-num" style="color:#2980b9;">${activeSubs}</div></div>
                     <div class="stat-box"><div>⏳ Истекли</div><div class="stat-num" style="color:#e74c3c;">${expiredSubs}</div></div>
                     <div class="stat-box"><div>🚫 В бане</div><div class="stat-num" style="color:#e53e3e;">${bannedCount}</div></div>
-                    <div class="stat-box"><div>🔓 Свободных</div><div class="stat-num" style="color:#95a5a6;">${unboundCount}</div></div>
                 </div>
             </div>
 
@@ -288,7 +305,7 @@ app.post('/admin/action', async (req, res) => {
         } else if (action === 'delete') {
             await pool.query("DELETE FROM blocker_keys WHERE key_code = $1", [key_code]);
         } else if (action === 'reset') {
-            const newExp = Date.now() + 720 * 3600 * 1000; // +30 дней
+            const newExp = Date.now() + 720 * 3600 * 1000;
             await pool.query("UPDATE blocker_keys SET status = 'active', expires_at = $1 WHERE key_code = $2", [newExp, key_code]);
         }
     } catch (err) {
@@ -307,7 +324,6 @@ app.post('/admin/generate', async (req, res) => {
             'INSERT INTO blocker_keys (key_code, duration_ms, expires_at, last_ping, is_generated, label, status) VALUES ($1, $2, 0, 0, TRUE, $3, $4)',
             [newKey, durationMs, label, 'active']
         );
-        console.log(`[АДМИН] Создан ключ: ${newKey} на ${label}`);
         res.json({ success: true, key: newKey });
     } catch (err) {
         console.error(err);
