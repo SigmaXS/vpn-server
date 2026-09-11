@@ -49,16 +49,20 @@ async function initDB() {
         expires_at BIGINT,
         last_ping BIGINT,
         is_generated BOOLEAN DEFAULT FALSE,
-        label VARCHAR(50)
+        label VARCHAR(50),
+        status VARCHAR(20) DEFAULT 'active'
       );
     `);
+
+    // Проверим, есть ли колонка status (на случай старой таблицы)
+    await pool.query(`ALTER TABLE blocker_keys ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'active';`);
 
     const res = await pool.query('SELECT COUNT(*) FROM blocker_keys');
     if (parseInt(res.rows[0].count) === 0) {
       for (const [k, duration] of Object.entries(INITIAL_KEYS)) {
         await pool.query(
-          'INSERT INTO blocker_keys (key_code, duration_ms, expires_at, last_ping, is_generated) VALUES ($1, $2, 0, 0, FALSE) ON CONFLICT DO NOTHING',
-          [k, duration]
+          'INSERT INTO blocker_keys (key_code, duration_ms, expires_at, last_ping, is_generated, status) VALUES ($1, $2, 0, 0, FALSE, $3) ON CONFLICT DO NOTHING',
+          [k, duration, 'active']
         );
       }
     }
@@ -97,12 +101,17 @@ app.post('/api/activate-key', async (req, res) => {
 
         const keyData = keyQuery.rows[0];
 
+        // Проверка на бан
+        if (keyData.status === 'banned') {
+            return res.json({ valid: false, expiresAt: 0, message: "Устройство заблокировано!" });
+        }
+
         // Ключ еще ни к кому не был привязан
         if (!keyData.device_id) {
             const expiresAt = now + parseInt(keyData.duration_ms);
             await pool.query(
-                'UPDATE blocker_keys SET device_id = $1, expires_at = $2, last_ping = $3 WHERE key_code = $4',
-                [deviceId, expiresAt, now, cleanKey]
+                'UPDATE blocker_keys SET device_id = $1, expires_at = $2, last_ping = $3, status = $4 WHERE key_code = $5',
+                [deviceId, expiresAt, now, 'active', cleanKey]
             );
             console.log(`⏱️ [КЛЮЧ АКТИВИРОВАН] Ключ ${cleanKey} привязан к: ${deviceId}`);
             return res.json({ valid: true, expiresAt: expiresAt });
@@ -134,6 +143,9 @@ app.get('/api/check-ban/:deviceId', async (req, res) => {
         const devQuery = await pool.query('SELECT * FROM blocker_keys WHERE device_id = $1', [deviceId]);
         if (devQuery.rows.length > 0) {
             const data = devQuery.rows[0];
+            if (data.status === 'banned') {
+                return res.status(403).send("BANNED");
+            }
             await pool.query('UPDATE blocker_keys SET last_ping = $1 WHERE key_code = $2', [now, data.key_code]);
             if (now > parseInt(data.expires_at)) {
                 return res.status(403).send("EXPIRED");
@@ -146,7 +158,7 @@ app.get('/api/check-ban/:deviceId', async (req, res) => {
     }
 });
 
-// АДМИНКА С АНАЛИТИКОЙ
+// АДМИНКА С АНАЛИТИКОЙ И НОВЫМИ КНОПКАМИ
 app.get('/admin/view-devices', async (req, res) => {
     try {
         const allKeys = await pool.query('SELECT * FROM blocker_keys ORDER BY key_code');
@@ -156,6 +168,7 @@ app.get('/admin/view-devices', async (req, res) => {
         let onlineDevices = 0;
         let activeSubs = 0;
         let expiredSubs = 0;
+        let bannedCount = 0;
         let unboundCount = 0;
 
         let tableRows = '';
@@ -165,11 +178,13 @@ app.get('/admin/view-devices', async (req, res) => {
             if (data.device_id) totalDevices++;
             else unboundCount++;
 
+            const isBanned = data.status === 'banned';
             const isExpired = data.expires_at && now > parseInt(data.expires_at);
             const lastPing = data.last_ping ? parseInt(data.last_ping) : 0;
-            const isOnline = data.device_id && lastPing && (now - lastPing < 120000) && !isExpired;
+            const isOnline = data.device_id && lastPing && (now - lastPing < 120000) && !isExpired && !isBanned;
 
-            if (data.device_id) {
+            if (isBanned) bannedCount++;
+            else if (data.device_id) {
                 if (isExpired) expiredSubs++;
                 else activeSubs++;
                 if (isOnline) onlineDevices++;
@@ -180,7 +195,9 @@ app.get('/admin/view-devices', async (req, res) => {
                 : 'Не активирован';
 
             let statusHtml = '<span class="status-offline">⚪ Оффлайн</span>';
-            if (isOnline) {
+            if (isBanned) {
+                statusHtml = '<span style="color:#e53e3e; font-weight:bold;">● В бане</span>';
+            } else if (isOnline) {
                 statusHtml = '<span class="status-online">🟢 Онлайн</span>';
             } else if (isExpired && data.device_id) {
                 statusHtml = '<span style="color:#e74c3c; font-weight:bold;">⏳ Истек</span>';
@@ -190,11 +207,18 @@ app.get('/admin/view-devices', async (req, res) => {
                 <tr>
                     <td>${statusHtml}</td>
                     <td><strong>${data.key_code}</strong></td>
-                    <td>${data.device_id ? `<code>${data.device_id}</code>` : '<span style="color:#e74c3c;">Свободен / Сброшен</span>'}</td>
+                    <td>${data.device_id ? `<code>${data.device_id}</code>` : '<span style="color:#95a5a6;">Свободен</span>'}</td>
                     <td>${dateStr}</td>
                     <td>
-                        <button class="btn btn-blue" onclick="resetDevice('${data.key_code}')">Сбросить</button>
-                        <button class="btn btn-yellow" onclick="unbindDevice('${data.key_code}')">Удалить</button>
+                        <form method="POST" action="/admin/action" style="display:inline;">
+                            <input type="hidden" name="key_code" value="${data.key_code}">
+                            <button name="action" value="reset" style="background:#3182ce;color:#fff;border:none;padding:5px 9px;border-radius:4px;cursor:pointer;margin-right:3px;">+30 дней</button>
+                            ${isBanned 
+                                ? '<button name="action" value="unban" style="background:#38a169;color:#fff;border:none;padding:5px 9px;border-radius:4px;cursor:pointer;margin-right:3px;font-weight:bold;">Разбанить</button>' 
+                                : '<button name="action" value="ban" style="background:#e53e3e;color:#fff;border:none;padding:5px 9px;border-radius:4px;cursor:pointer;margin-right:3px;">В БАН</button>'
+                            }
+                            <button name="action" value="delete" style="background:#718096;color:#fff;border:none;padding:5px 9px;border-radius:4px;cursor:pointer;">Удалить</button>
+                        </form>
                     </td>
                 </tr>
             `;
@@ -212,8 +236,8 @@ app.get('/admin/view-devices', async (req, res) => {
             <title>Панель управления Блокером (PostgreSQL)</title>
             <style>
                 body { font-family: 'Segoe UI', sans-serif; background-color: #f4f7f6; padding: 20px; }
-                .container { max-width: 1100px; margin: 0 auto; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); margin-bottom: 20px; }
-                .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 15px; margin-bottom: 10px; }
+                .container { max-width: 1150px; margin: 0 auto; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); margin-bottom: 20px; }
+                .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 15px; margin-bottom: 10px; }
                 .stat-box { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 15px; text-align: center; }
                 .stat-num { font-size: 24px; font-weight: bold; color: #3498db; margin-top: 5px; }
                 table { width: 100%; border-collapse: collapse; margin-top: 15px; }
@@ -222,8 +246,6 @@ app.get('/admin/view-devices', async (req, res) => {
                 .btn { padding: 8px 12px; border: none; border-radius: 4px; cursor: pointer; color: white; font-weight: bold; margin-right: 5px; }
                 .btn-green { background-color: #2ecc71; }
                 .btn-purple { background-color: #9b59b6; }
-                .btn-yellow { background-color: #f39c12; }
-                .btn-blue { background-color: #2980b9; }
                 .badge { background-color: #2ecc71; color: white; padding: 5px 10px; border-radius: 20px; font-size: 14px; }
                 code { background: #eee; padding: 4px 8px; border-radius: 4px; color: #d35400; font-family: monospace; font-size: 14px; }
                 .gen-panel { display: flex; gap: 10px; margin-bottom: 15px; flex-wrap: wrap; }
@@ -235,10 +257,11 @@ app.get('/admin/view-devices', async (req, res) => {
             <div class="container">
                 <h2>📊 Аналитика и Статистика (Блокер)</h2>
                 <div class="stats-grid">
-                    <div class="stat-box"><div>Всего в базе</div><div class="stat-num">${allKeys.rows.length}</div></div>
-                    <div class="stat-box"><div>⚡ Онлайн сейчас</div><div class="stat-num" style="color:#2ecc71;">${onlineDevices}</div></div>
+                    <div class="stat-box"><div>Всего ключей</div><div class="stat-num">${allKeys.rows.length}</div></div>
+                    <div class="stat-box"><div>⚡ Онлайн</div><div class="stat-num" style="color:#2ecc71;">${onlineDevices}</div></div>
                     <div class="stat-box"><div>✅ Активных</div><div class="stat-num" style="color:#2980b9;">${activeSubs}</div></div>
                     <div class="stat-box"><div>⏳ Истекли</div><div class="stat-num" style="color:#e74c3c;">${expiredSubs}</div></div>
+                    <div class="stat-box"><div>🚫 В бане</div><div class="stat-num" style="color:#e53e3e;">${bannedCount}</div></div>
                     <div class="stat-box"><div>🔓 Свободных</div><div class="stat-num" style="color:#95a5a6;">${unboundCount}</div></div>
                 </div>
             </div>
@@ -267,7 +290,7 @@ app.get('/admin/view-devices', async (req, res) => {
                             <th>Ключ</th>
                             <th>ID Устройства</th>
                             <th>Истекает (Местное)</th>
-                            <th>Управление</th>
+                            <th>Действие</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -277,16 +300,6 @@ app.get('/admin/view-devices', async (req, res) => {
             </div>
 
             <script>
-                async function resetDevice(key) {
-                    if(!confirm('Сбросить привязку для ключа ' + key + '?')) return;
-                    await fetch('/admin/reset', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ key }) });
-                    location.reload();
-                }
-                async function unbindDevice(key) {
-                    if(!confirm('Удалить ключ ' + key + ' из базы?')) return;
-                    await fetch('/admin/unbind', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ key }) });
-                    location.reload();
-                }
                 async function generateKey(value, label, isHours) {
                     await fetch('/admin/generate', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ value, label, isHours }) });
                     location.reload();
@@ -301,26 +314,23 @@ app.get('/admin/view-devices', async (req, res) => {
     }
 });
 
-app.post('/admin/reset', async (req, res) => {
-    const { key } = req.body;
+app.post('/admin/action', async (req, res) => {
+    const { key_code, action } = req.body;
     try {
-        await pool.query('UPDATE blocker_keys SET device_id = NULL, expires_at = 0, last_ping = 0 WHERE key_code = $1', [key]);
-        res.json({ success: true });
+        if (action === 'ban') {
+            await pool.query("UPDATE blocker_keys SET status = 'banned' WHERE key_code = $1", [key_code]);
+        } else if (action === 'unban') {
+            await pool.query("UPDATE blocker_keys SET status = 'active' WHERE key_code = $1", [key_code]);
+        } else if (action === 'delete') {
+            await pool.query("DELETE FROM blocker_keys WHERE key_code = $1", [key_code]);
+        } else if (action === 'reset') {
+            const newExp = Date.now() + 720 * 3600 * 1000; // +30 дней
+            await pool.query("UPDATE blocker_keys SET status = 'active', expires_at = $1 WHERE key_code = $2", [newExp, key_code]);
+        }
     } catch (err) {
         console.error(err);
-        res.status(500).json({ success: false });
     }
-});
-
-app.post('/admin/unbind', async (req, res) => {
-    const { key } = req.body;
-    try {
-        await pool.query('DELETE FROM blocker_keys WHERE key_code = $1', [key]);
-        res.json({ success: true });
-    } catch (err) {
-        console.error(err);
-        res.status(500).json({ success: false });
-    }
+    res.redirect('/admin/view-devices');
 });
 
 app.post('/admin/generate', async (req, res) => {
@@ -330,8 +340,8 @@ app.post('/admin/generate', async (req, res) => {
 
     try {
         await pool.query(
-            'INSERT INTO blocker_keys (key_code, duration_ms, expires_at, last_ping, is_generated, label) VALUES ($1, $2, 0, 0, TRUE, $3)',
-            [newKey, durationMs, label]
+            'INSERT INTO blocker_keys (key_code, duration_ms, expires_at, last_ping, is_generated, label, status) VALUES ($1, $2, 0, 0, TRUE, $3, $4)',
+            [newKey, durationMs, label, 'active']
         );
         console.log(`[АДМИН] Создан ключ: ${newKey} на ${label}`);
         res.json({ success: true, key: newKey });
